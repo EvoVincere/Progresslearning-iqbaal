@@ -22,6 +22,96 @@
 | CDN | Cloudflare | Cloudflare (tetap, tidak berubah) |
 | Registry | Docker Hub | Docker Hub (tetap) |
 
+### 🔀 Alur Traffic Website — Sebelum vs Sesudah Migrasi
+
+**Alur Traffic LAMA (Sebelum Migrasi):**
+```
+User (Browser)
+    │
+    ▼
+┌──────────────┐     HTTPS (443)      ┌──────────────────────┐
+│  Cloudflare  │ ──────────────────── │  EC2 Lama            │
+│  (CDN + SSL) │                      │  ┌────────────────┐  │
+│              │     HTTP (80)        │  │ Docker          │  │
+│  DNS: A rec  │ ──────────────────►  │  │  └── Nginx      │  │
+│  → OLD_EC2_IP│                      │  │      └── App    │  │
+└──────────────┘                      │  └────────────────┘  │
+                                      └──────────────────────┘
+```
+
+**Alur Traffic BARU (Setelah Migrasi):**
+```
+User (Browser)
+    │
+    │  1. Request https://iqbaalcloudporto.site
+    ▼
+┌──────────────────┐
+│   CLOUDFLARE     │  ← CDN, SSL Termination, DDoS Protection
+│   (Tetap sama)   │
+│                  │
+│   DNS A Record:  │
+│   iqbaalcloudporto.site → NEW_EC2_IP
+└────────┬─────────┘
+         │
+         │  2. Forward ke EC2 (port 80/443)
+         ▼
+┌──────────────────────────────────────────────────────────┐
+│   AWS EC2 t2.micro (atau Tencent Lighthouse)             │
+│   IP: NEW_EC2_IP                                         │
+│                                                          │
+│   ┌──────────────────────────────────────────────────┐   │
+│   │   K3s Cluster (Single Node)                      │   │
+│   │                                                  │   │
+│   │   3. Traffic masuk via NodePort :30080            │   │
+│   │      (atau Nginx Ingress Controller :80/:443)    │   │
+│   │              │                                   │   │
+│   │              ▼                                   │   │
+│   │   ┌──────────────────────────────────────────┐   │   │
+│   │   │  Service: portfolio-service              │   │   │
+│   │   │  (ClusterIP → Load Balance ke pods)      │   │   │
+│   │   └──────────────────┬───────────────────────┘   │   │
+│   │                      │                           │   │
+│   │          4. Round-robin ke salah satu pod        │   │
+│   │              ┌───────┴───────┐                   │   │
+│   │              ▼               ▼                   │   │
+│   │   ┌─────────────────┐ ┌─────────────────┐       │   │
+│   │   │  Pod Replica 1  │ │  Pod Replica 2  │       │   │
+│   │   │  Nginx + App    │ │  Nginx + App    │       │   │
+│   │   │  (:3000)        │ │  (:3000)        │       │   │
+│   │   └─────────────────┘ └─────────────────┘       │   │
+│   │                                                  │   │
+│   │   ┌──────────────────────────────────────────┐   │   │
+│   │   │  Background Services (juga di K3s)       │   │   │
+│   │   │  • Prometheus (:30090) ← scrape metrics  │   │   │
+│   │   │  • Grafana (:30030) ← dashboard          │   │   │
+│   │   │  • Argo CD (:30443) ← GitOps sync        │   │   │
+│   │   │  • Jenkins (:8080) ← CI/CD pipeline      │   │   │
+│   │   └──────────────────────────────────────────┘   │   │
+│   └──────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────┘
+         │
+         │  5. Response kembali ke user
+         ▼
+User melihat website iqbaalcloudporto.site ✅
+```
+
+**Ringkasan Alur (1 baris):**
+```
+User → Cloudflare (SSL) → EC2/Lighthouse → K3s NodePort → Service → Pod (Nginx+App) → Response
+```
+
+**Port Mapping Setelah Migrasi:**
+
+| Port | Service | Akses |
+|---|---|---|
+| `:80` / `:443` | Cloudflare → EC2 | Website utama (via CDN) |
+| `:30080` | K3s NodePort → App | Direct access (bypass CDN) |
+| `:8080` | Jenkins Web UI | CI/CD management |
+| `:30090` | Prometheus | Monitoring metrics |
+| `:30030` | Grafana | Monitoring dashboard |
+| `:30443` | Argo CD | GitOps dashboard |
+| `:9100` | Node Exporter | OS metrics (internal) |
+
 ---
 
 ## ✅ Pre-Migration Checklist
